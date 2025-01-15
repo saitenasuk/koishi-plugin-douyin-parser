@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-douyin-parser",
-  "description": "解析抖音，tiktok链接",
+  "description": "解析抖音，tiktok链接(需自行部署API)",
   "version": "0.0.1",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
@@ -9,11 +9,18 @@
     "dist"
   ],
   "license": "MIT",
+  "repository": {
+  "type": "git",
+  "url": "git+https://github.com/saitenasuk/koishi-plugin-douyin-parser.git"
+  },
   "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
-    "plugin"
+    "plugin",
+    "douyin",
+    "tiktok",
+    "抖音"
   ],
   "devDependencies": {},
   "peerDependencies": {
