@@ -10,10 +10,9 @@
   ],
   "license": "MIT",
   "repository": {
-  "type": "git",
-  "url": "git+https://github.com/saitenasuk/koishi-plugin-douyin-parser.git"
+    "type": "git",
+    "url": "git+https://github.com/saitenasuk/koishi-plugin-douyin-parser.git"
   },
-  "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
@@ -22,7 +21,6 @@
     "tiktok",
     "抖音"
   ],
-  "devDependencies": {},
   "peerDependencies": {
     "koishi": "^4.18.3"
   }
