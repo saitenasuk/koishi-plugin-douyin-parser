@@ -1,3 +1,4 @@
+import { log } from "console";
 import { Context, Schema, h } from "koishi";
 
 export const name = "douyin-parser";
@@ -50,8 +51,32 @@ function findBestQualityVideo(bit_rate, videoQuality) {
     ) ?? null
   );
 }
+type videoInfo = {
+  desc: string,  //视频描述
+  author: string, //作者
+  digg_count: number, //点赞数
+  share_count: number, //分享数
+  comment_count: number, //评论数
+  collect_count: number, //收藏数
+  videoCover: string, //视频封面
+  duration: number, //视频时长
+  videoData: any, //视频数据
+}
+
+const videoInfo: videoInfo = {
+  desc: "",
+  author: "",
+  digg_count: 0,
+  share_count: 0,
+  comment_count: 0,
+  collect_count: 0,
+  videoCover: "",
+  videoData: {},
+  duration: 0,
+}
 
 export function apply(ctx: Context, config: Config) {
+  console.log("config.isSend :>> ", config.isSend);
   ctx.on("message", async (session) => {
     //不解析bot自己的消息
     if (session.selfId === session.userId) return;
@@ -67,86 +92,115 @@ export function apply(ctx: Context, config: Config) {
         const response = await fetch(
           `${config.url}/api/hybrid/video_data?url=${url}&minimal=false`
         );
-        //解析到视频大小
         if (!response.ok) {
           return session.send(
             h("quote", { id: session.messageId }) + "解析失败! 该链接或许不支持"
           );
         }
         const res = await response.json();
-        const { desc, author, statistics, video, duration } = res.data;
-        const { nickname } = author;
-        const { digg_count, share_count, comment_count, collect_count } =
-          statistics;
-        const { big_thumbs, bit_rate, cover } = video;
-        const videoQuality: string[] = [
-          "adapt_lowest_1080_1", // 最高优先级
-          "adapt_lowest_720_1", // 中等优先级
-          "normal_1080_0", // 次高优先级
-          "normal_720_0", // 中等优先级
-          "normal_540_0", // 低优先级
-          "adapt_low_540_0", // 最低优先级
-        ];
-        let video_info = null;
-        // let video_info = findBestQualityVideo(bit_rate, videoQuality);
-        for (const priority of videoQuality) {
-          video_info = bit_rate.find(
-            (item: any) => item.format === "mp4" && item.gear_name === priority
-          );
+        if(session.content.includes("douyin.com")){
+          const { desc, author, statistics, video, duration } = res.data;
+          const { digg_count, share_count, comment_count, collect_count } = statistics;
+          const { big_thumbs, bit_rate, cover } = video;
 
-          if (video_info) {
-            break; // 找到符合优先级的项，退出循环
+          // 直接更新 videoInfo
+          Object.assign(videoInfo, {
+            desc,
+            author: author.nickname,
+            digg_count,
+            share_count,
+            comment_count,
+            collect_count,
+            videoCover: big_thumbs[0]?.img_url || cover.url_list[0],
+            duration,
+          });
+          const videoQuality: string[] = [
+            "adapt_lowest_1080_1", // 最高优先级
+            "adapt_lowest_720_1", // 中等优先级                       
+            "normal_1080_0", // 次高优先级
+            "normal_720_0", // 中等优先级
+            "normal_540_0", // 低优先级
+            "adapt_low_540_0", // 最低优先级
+          ];
+  
+          // let video_info = findBestQualityVideo(bit_rate, videoQuality);
+          for (const priority of videoQuality) {
+            videoInfo.videoData = bit_rate.find(
+              (item: any) => item.format === "mp4" && item.gear_name === priority
+            );
+            if (videoInfo.videoData) {
+              videoInfo.videoData = videoInfo.videoData.play_addr;
+              break; // 找到符合优先级的项，退出循环
+            }else{
+              videoInfo.videoData = bit_rate[0]?.play_addr || null; //未找到符合优先级的项，使用最低优先级
+            }
           }
+        }else{ 
+          //Tiktok
+          const { desc, author, statistics, video } = res.data;
+          const { digg_count, share_count, comment_count, collect_count } = statistics;
+          const { big_thumbs, bit_rate,play_addr,play_addr_h264, cover, duration } = video;
+
+          // 直接更新 videoInfo
+          Object.assign(videoInfo, {
+            desc,
+            author: author.nickname,
+            digg_count,
+            share_count,
+            comment_count,
+            collect_count,
+            videoCover: big_thumbs?.[0]?.img_url || cover?.url_list?.[0],
+            duration,
+          });
+          videoInfo.videoData = play_addr || play_addr_h264 || bit_rate[0]?.play_addr || null; //未找到符合优先级的项，使用最低优先级
+
         }
-        console.log("video_info :>> ", video_info);
-        const text5 =
+      
+        console.log("video_info :>> ", videoInfo);
+        const videoTitle =
           "标题：" +
-          desc +
+          videoInfo.desc +
           "\n作者：" +
-          nickname +
+          videoInfo.author +
           "\n点赞数：" +
-          digg_count +
+          videoInfo.digg_count +
           "\t  分享数：" +
-          share_count +
+          videoInfo.share_count +
           "\n评论数：" +
-          comment_count +
+          videoInfo.comment_count +
           "\t  收藏数：" +
-          collect_count;
-        console.log(text5);
+          videoInfo.collect_count +
+          (config.isSend ? "\n时长：" +
+              formatMilliseconds(videoInfo.duration) +
+              "\t  大小：" +
+              (videoInfo.videoData.data_size / 1024 / 1024).toFixed(2) +
+              "MB" : "")
+        console.log(videoTitle);
+        // return;
         await session.sendQueued(
           h(
             "p",
             h("quote", { id: session.messageId }),
             h("img", {
-              src: big_thumbs[0]?.img_url
-                ? big_thumbs[0]?.img_url
-                : cover.url_list[0],
+              src: videoInfo.videoCover
             }),
-            text5
+            videoTitle
           )
         );
         if (config.isSend) {
-          await session.sendQueued(
-            "视频发送中... 时长：" +
-              formatMilliseconds(duration) +
-              "  大小：" +
-              (video_info.play_addr.data_size / 1024 / 1024).toFixed(2) +
-              "MB"
-          );
+          // await session.sendQueued(
+          //   "视频发送中... 
+          // );
           await session.sendQueued(
             // <>
             //   <video src={video_info[0].play_addr.url_list[0]} />
             // </>
-            h("video", { src: video_info.play_addr.url_list[0] })
+            h("video", { src: videoInfo.videoData.url_list[0] })
           );
         }
       } catch (error) {
         console.log(error);
         return session.send(
-          // <>
-          //   <quote id={session.messageId} />
-          //   发生错误：{error.message}
-          // </>
           h("quote", { id: session.messageId }) + "发生错误：" + error.message
         );
       } finally {
