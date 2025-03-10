@@ -1,34 +1,35 @@
-import { log } from "console";
 import { Context, Schema, h } from "koishi";
-
+import path from 'path'
+import os from 'os'
+import { createWriteStream } from 'fs'
+import { mkdir, unlink } from 'fs/promises'
+import { pipeline } from 'stream/promises'
 export const name = "douyin-parser";
 
 export interface Config {
   url: string;
-  isSend: boolean;
+  video: any;
 }
 
 export const Config: Schema<Config> = Schema.object({
-  // analyze: Schema.intersect([
-  //   Schema.object({
-  //     analyze: Schema.boolean()
-  //       .description("是否开启解析抖音，tiktok链接")
-  //       .default(false),
-  //   }),
-  //   Schema.union([
-  //     Schema.object({
-  //       analyze: Schema.const(true).required(),
-  //       link: Schema.string()
-  //         .description("Api地址示例：http://127.0.0.1:80")
-  //         .required(),
-  //     }),
-  //     Schema.object({}),
-  //   ]),
-  // ]),
   url: Schema.string()
     .description("Api地址示例：http://127.0.0.1:80")
     .required(),
-  isSend: Schema.boolean().description("是否发送视频").default(true),
+  // isSend: Schema.boolean().description("是否发送视频").default(true),
+  video: Schema.intersect([
+    Schema.object({
+      isSend: Schema.boolean().default(false).description('是否发送视频'),
+    }),
+    Schema.union([
+      Schema.object({
+        isSend: Schema.const(true).required(),
+        isCache: Schema.boolean().default(false).description('是否缓存到内存后再发送,小内存机器建议关闭或调整视频大小限制'),
+        maxDuration: Schema.number().description('允许发送的最大视频长度(秒),0为不限制').default(0).min(0),
+        maxSize: Schema.number().description('允许发送的最大视频大小(MB),0为不限制').default(0).min(0),
+      }),
+      Schema.object({}),
+    ])
+  ])
 });
 
 //计算视频时长
@@ -42,14 +43,6 @@ function formatMilliseconds(milliseconds) {
   const mm = String(minutes).padStart(2, "0");
   const ss = String(seconds).padStart(2, "0");
   return `${hh}时${mm}分${ss}秒`;
-}
-//查找最佳质量的视频
-function findBestQualityVideo(bit_rate, videoQuality) {
-  return (
-    bit_rate.find(
-      (item) => item.format === "mp4" && videoQuality.includes(item.gear_name)
-    ) ?? null
-  );
 }
 type videoInfo = {
   desc: string,  //视频描述
@@ -76,7 +69,7 @@ const videoInfo: videoInfo = {
 }
 
 export function apply(ctx: Context, config: Config) {
-  console.log("config.isSend :>> ", config.isSend);
+  // ctx.logger.info("读取到临时缓存目录：",os.tmpdir());
   ctx.on("message", async (session) => {
     //不解析bot自己的消息
     if (session.selfId === session.userId) return;
@@ -87,8 +80,6 @@ export function apply(ctx: Context, config: Config) {
       try {
         const urlRegex = /(https?:\/\/[^\s]+)/g;
         const url = session.content.match(urlRegex)[0];
-        // console.log("url :>> ", url);
-        console.error("url :>> ", url);
         const response = await fetch(
           `${config.url}/api/hybrid/video_data?url=${url}&minimal=false`
         );
@@ -170,7 +161,7 @@ export function apply(ctx: Context, config: Config) {
           videoInfo.comment_count +
           "\t  收藏数：" +
           videoInfo.collect_count +
-          (config.isSend ? "\n时长：" +
+          (config.video.isSend ? "\n时长：" +
               formatMilliseconds(videoInfo.duration) +
               "\t  大小：" +
               (videoInfo.videoData.data_size / 1024 / 1024).toFixed(2) +
@@ -178,6 +169,7 @@ export function apply(ctx: Context, config: Config) {
         console.log(videoTitle);
         // return;
         await session.sendQueued(
+          //发送视频信息 
           h(
             "p",
             h("quote", { id: session.messageId }),
@@ -187,14 +179,50 @@ export function apply(ctx: Context, config: Config) {
             videoTitle
           )
         );
-        if (config.isSend) {
-          // await session.sendQueued(
-          //   "视频发送中... 
-          // );
+        //检测视频大小与时长
+        if (config.video.maxSize && config.video.maxSize !== 0 && videoInfo.videoData.data_size / 1024 / 1024 > config.video.maxSize) {
+          ctx.logger.warn(`视频大小超过限制 (${config.video.maxSize}MB)，取消发送`)
+          return;
+        }
+        if (config.video.maxDuration && config.video.maxDuration !== 0 && videoInfo.duration / 1000 > config.video.maxDuration) {
+          ctx.logger.warn(`视频时长超过限制 (${config.video.maxDuration}秒)，取消发送`)
+          return;
+        }
+        //发送视频
+        if (config.video.isSend && config.video.isCache) {
+          //缓存到内存后再发送
+          const videoBuffer = await ctx.http.get<ArrayBuffer>(config.url + '/api/download?url=' + url + '&prefix=true&with_watermark=false', {
+            responseType: 'arraybuffer',
+          });
+          session.send(h.video(videoBuffer, 'video/mp4'))
+          //缓存到磁盘
+          // 使用系统临时目录
+          // const tmpDir = path.join(os.tmpdir(), 'koishi-douyin-cache')
+          // const filename = `video_${Date.now()}.mp4`
+          // const filepath = path.join(tmpDir, filename)
+          // // 确保临时目录存在
+          // await mkdir(tmpDir, { recursive: true })
+          // // 下载视频
+          // const response = await fetch(config.url + '/api/download?url=' + url + '&prefix=true&with_watermark=false')
+          // if (!response.ok) {
+          //   throw new Error(`下载失败: ${response.statusText}`)
+          // }
+          // // 使用流式下载
+          // await pipeline(
+          //   response.body,
+          //   createWriteStream(filepath)
+          // )
+          // // 发送视频
+          // await session.sendQueued(h.file(filepath))
+
+          // // 清理文件
+          // setTimeout(() => {
+          //   unlink(filepath).catch(e => {
+          //     ctx.logger.warn('Failed to delete cached video:', e)
+          //   })
+          // }, 60 * 1000) // 1分钟后删除
+        }else if(config.video.isSend) {
           await session.sendQueued(
-            // <>
-            //   <video src={video_info[0].play_addr.url_list[0]} />
-            // </>
             h("video", { src: videoInfo.videoData.url_list[0] })
           );
         }

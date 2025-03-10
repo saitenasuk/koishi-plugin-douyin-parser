@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-douyin-parser",
   "description": "解析抖音，tiktok链接(需自行部署API)",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
