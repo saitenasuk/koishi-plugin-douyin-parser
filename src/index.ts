@@ -1,9 +1,4 @@
 import { Context, Schema, h } from "koishi";
-import path from 'path'
-import os from 'os'
-import { createWriteStream } from 'fs'
-import { mkdir, unlink } from 'fs/promises'
-import { pipeline } from 'stream/promises'
 export const name = "douyin-parser";
 
 export interface Config {
@@ -191,36 +186,22 @@ export function apply(ctx: Context, config: Config) {
         //发送视频
         if (config.video.isSend && config.video.isCache) {
           //缓存到内存后再发送
-          const videoBuffer = await ctx.http.get<ArrayBuffer>(config.url + '/api/download?url=' + url + '&prefix=true&with_watermark=false', {
-            responseType: 'arraybuffer',
-          });
-          session.send(h.video(videoBuffer, 'video/mp4'))
-          //缓存到磁盘
-          // 使用系统临时目录
-          // const tmpDir = path.join(os.tmpdir(), 'koishi-douyin-cache')
-          // const filename = `video_${Date.now()}.mp4`
-          // const filepath = path.join(tmpDir, filename)
-          // // 确保临时目录存在
-          // await mkdir(tmpDir, { recursive: true })
-          // // 下载视频
-          // const response = await fetch(config.url + '/api/download?url=' + url + '&prefix=true&with_watermark=false')
-          // if (!response.ok) {
-          //   throw new Error(`下载失败: ${response.statusText}`)
-          // }
-          // // 使用流式下载
-          // await pipeline(
-          //   response.body,
-          //   createWriteStream(filepath)
-          // )
-          // // 发送视频
-          // await session.sendQueued(h.file(filepath))
+          try {
+            const videoBuffer = await ctx.http.get<ArrayBuffer>(config.url + '/api/download?url=' + url + '&prefix=true&with_watermark=false', {
+              responseType: 'arraybuffer',
+            });
+            
 
-          // // 清理文件
-          // setTimeout(() => {
-          //   unlink(filepath).catch(e => {
-          //     ctx.logger.warn('Failed to delete cached video:', e)
-          //   })
-          // }, 60 * 1000) // 1分钟后删除
+            
+            // 直接发送视频buffer，避免文件路径问题
+            await session.sendQueued(h.video(Buffer.from(videoBuffer), 'video/mp4'))
+          } catch (error) {
+            ctx.logger.error('视频缓存发送失败，尝试直接发送链接:', error)
+            // 如果缓存发送失败，回退到直接发送链接
+            await session.sendQueued(
+              h("video", { src: videoInfo.videoData.url_list[0] })
+            );
+          }
         }else if(config.video.isSend) {
           await session.sendQueued(
             h("video", { src: videoInfo.videoData.url_list[0] })
