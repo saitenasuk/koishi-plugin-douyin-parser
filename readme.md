@@ -4,6 +4,6 @@
 
 自行部署API[Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)服务
 
-抖音解析代码参考：[koishi-plugin-douyin](https://github.com/tediorelee/koishi-plugin-douyin#readme)
+代码参考：[koishi-plugin-douyin](https://github.com/tediorelee/koishi-plugin-douyin#readme)
 
 解析抖音，tiktok链接
