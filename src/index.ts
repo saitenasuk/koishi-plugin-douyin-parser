@@ -1,4 +1,3 @@
-import { log } from "console";
 import { Context, Schema, Session, h } from "koishi";
 export const name = "douyin-parser";
 
@@ -40,7 +39,14 @@ interface ResultVideoData {
   media_type?: number; //媒体类型，2为图文，4为视频
   desc: string;  //视频描述
   duration: number; //视频时长
-  images: { download_url_list: string[] }[]; //图文
+  images: {  //图文类型
+    download_url_list: string[],
+    video?:{  //图文类型的视频
+      download_addr:{
+        url_list: string[]
+      }
+    }
+  }[]; 
   author: { nickname: string };  //作者
   statistics: {
     digg_count: number; //点赞数
@@ -102,36 +108,18 @@ function buildVideoInfoText(info: ResultVideoData, isSend: Config | boolean): st
 }
 
 // 从API获取视频数据
-async function getVideoData(url: string, config: Config, session, ctx: Context): Promise<ResultVideoData | null> {
-  try {
-    const response = await fetch(
-      `${config.url}/api/hybrid/video_data?url=${url}&minimal=false`
-    );
-    
-    if (!response.ok) {
-      ctx.logger.warn(`API请求失败 - 状态码: ${response.status}, URL: ${url}`);
-      await session.sendQueued(
-        h("p",
-          h("quote", { id: session.messageId }),
-          "解析失败! 该链接或许不支持"
-        )
-      );
-      return null;
-    }
-    
-    const { data } = await response.json() as { data: ResultVideoData };
-    ctx.logger.info(`链接解析成功 - URL: ${url}, 媒体类型: ${data.media_type===2? '图文' :'视频'}`);
-    return data;
-  } catch (error) {
-    ctx.logger.error(`获取视频数据时发生错误 - URL: ${url}`, error);
-    await session.sendQueued(
-      h("p",
-        h("quote", { id: session.messageId }),
-        "网络请求失败，请检查API服务是否正常"
-      )
-    );
-    return null;
+async function getVideoData(url: string, config: Config, ctx: Context): Promise<ResultVideoData> {
+  const response = await fetch(
+    `${config.url}/api/hybrid/video_data?url=${url}&minimal=false`
+  );
+  
+  if (!response.ok) {
+    throw new Error(`API请求失败 - 状态码: ${response.status}, URL: ${url}`);
   }
+  
+  const { data } = await response.json() as { data: ResultVideoData };
+  ctx.logger.info(`链接解析成功 - URL: ${url}, 媒体类型: ${data.media_type===2? '图文' :'视频'}`);
+  return data;
 }
 
 // 检查视频限制
@@ -144,104 +132,88 @@ function checkVideoLimits(info: ResultVideoData, config: Config, ctx: Context ):
   const videoDurationSeconds = info.duration / 1000;
   if (config.video.maxDuration > 0 && videoDurationSeconds > config.video.maxDuration) {
     ctx.logger.warn(`视频时长 (${videoDurationSeconds}秒) 超过限制 (${config.video.maxDuration}秒)，取消发送`);
-    return "视频时长超过限制，取消发送"
+    return false
   }
   return true
 }
 
 //处理视频
 async function handleVideo(videoData: ResultVideoData, config: Config, session: Session, ctx: Context, url: string) {
-  try {
-    // 构建视频信息文本
-    const videoInfo = buildVideoInfoText(videoData, config.video.isSend);
-    // 检测视频时长是否超过限制
-    const check = checkVideoLimits(videoData, config, ctx)
-      // 发送视频基本信息
-  await session.sendQueued(
+  // 构建视频信息文本
+  const videoInfo = buildVideoInfoText(videoData, config.video.isSend);
+  // 检测视频时长是否超过限制
+  const check = checkVideoLimits(videoData, config, ctx)
+  // 发送视频基本信息
+  const msId = await session.sendQueued(
     h("p",
       h("quote", { id: session.messageId }),
       h("img", { src: videoData.video.cover.url_list[0] }),
-      buildVideoInfoText(videoData, config.video.isSend)
+      videoInfo
     )
   );
-    // 发送视频
-    if (config.video.isSend && check) {
-      await session.sendQueued(h('video', { src: `${config.url}/api/download?url=${url}&prefix=true&with_watermark=false` }));
-      ctx.logger.info(`视频消息发送成功 - 用户: ${session.userId}, URL: ${url}`);
-    } else {
-      await session.sendQueued(
-        h("p",
-          h("quote", { id: session.messageId }),
-          videoInfo
-        )
-      );
-      ctx.logger.info(`视频信息发送成功（不包含视频文件） - 用户: ${session.userId},URL: ${url}`);
-    }
-  } catch (error) {
-    ctx.logger.error(`处理视频消息时发生错误 - 用户: ${session.userId}, URL: ${url}`, error);
-    try {
-      await session.sendQueued(
-        h("p",
-          h("quote", { id: session.messageId }),
-          "视频处理失败，请稍后重试"
-        )
-      );
-    } catch (sendError) {
-      ctx.logger.error(`发送视频错误消息失败 - 用户: ${session.userId}`, sendError);
+  // 发送视频
+  if (config.video.isSend && check) {
+    const result = await session.sendQueued(h('video', { src: `${config.url}/api/download?url=${url}&prefix=true&with_watermark=false` }));
+    if (!result || result.length === 0) {
+      await session.sendQueued(h("p",h("quote", { id: msId }),"视频发送失败"));
+      throw new Error(`视频发送失败 - 用户: ${session.username}, 群组: ${maskNumbers(session.guildId)}, URL: ${url}`);
     }
   }
 }
-
-
 //处理图文
 async function handlePhotoText(videoData: ResultVideoData,config,session,ctx,url: string){
-  try {
-    // 构建文本
-    const videoInfo = buildVideoInfoText(videoData,false);
-    // 发送图文 如果图片大于1则发送合并消息
-    if(videoData.images.length > 1){
-      //先创建包含视频信息的第一条消息
-      const messagesToForward = [
-        h('message',videoInfo)
-      ];
-      // 然后遍历添加图片消息
-      videoData.images.forEach(img => {
-        messagesToForward.push(h('message', h('img', { src: img.download_url_list?.[0] })));
-      });
-      
-      await session.sendQueued(
-        h('message', { forward: true }, ...messagesToForward)
-      );
-    }else{
-      await session.sendQueued(
-            h("p",  
-              h("quote", { id: session.messageId }),
-              h("img", { src: videoData.images?.[0]?.download_url_list?.[0] }),
-              videoInfo
-            )
-          );
-        }
-  } catch (error) {
-    ctx.logger.error('处理图文消息时发生错误:', error);
-    try {
-      await session.sendQueued(
-        h("p",
-          h("quote", { id: session.messageId }),
-          "图文处理失败，请稍后重试"
-        )
-      );
-    } catch (sendError) {
-      ctx.logger.error('发送错误消息失败:', sendError);
-    }
+  // 构建文本
+  const videoInfo = buildVideoInfoText(videoData,false);
+  let msId = [];
+  // 发送图文 如果图片大于1则发送合并消息
+  if(videoData.images.length > 1){
+    //先创建包含视频信息的第一条消息
+    const messagesToForward = [
+      h('message',videoInfo)
+    ];
+    // 然后遍历添加图片消息
+    videoData.images.forEach(img => {
+      messagesToForward.push(h('message', h('img', { src: img.download_url_list?.[0] })));
+    });
+    msId = await session.sendQueued(
+      h('message', { forward: true }, ...messagesToForward)
+    );
+  }else if(videoData.images[0].video?.download_addr?.url_list?.[0]){
+    //发送图文类型的视频
+    msId = await session.sendQueued(
+      h("p",  
+        h("quote", { id: session.messageId }),
+        h("img", { src: videoData.images?.[0]?.download_url_list?.[0] }),
+        videoInfo
+      )
+    );
+  }else{
+    msId = await session.sendQueued(
+      h("p",  
+        h("quote", { id: session.messageId }),
+        h("img", { src: videoData.images?.[0]?.download_url_list?.[0] }),
+        videoInfo
+      )
+    );
   }
+  if(!msId || msId.length === 0){
+    await session.sendQueued(h("p",h("quote", { id: session.messageId }),"图文发送失败"));
+    throw new Error(`图文发送失败 - 用户: ${session.username}, 群组: ${maskNumbers(session.guildId)}, URL: ${url}`);
+  }
+}
+
+// 混淆数字信息用于日志记录
+function maskNumbers(str: string, showLength: number = 3): string {
+  if (!str || str.length <= showLength * 2) return str;
+  return str.substring(0, showLength) + '****' + str.substring(str.length - showLength);
 }
 
 //程序入口
 export function apply(ctx: Context, config: Config) {
+    // 注册一个命令用于发送本地文件
   ctx.on("message", async (session: Session) => {
     // 不解析bot自己的消息
     if (session.selfId === session.userId) return;
-    
     // 检查是否包含抖音/ TikTok链接
     const hasDouyin = session.content.includes("douyin.com");
     const hasTiktok = session.content.includes("tiktok.com");
@@ -250,53 +222,29 @@ export function apply(ctx: Context, config: Config) {
     try {
       // 提取链接
       const url = extractUrl(session.content);
+      
       if (!url) {
-        ctx.logger.warn(`未能提取到有效链接 - 用户: ${session.userId}, 内容: ${session.content}`);
-        await session.sendQueued(
-          h("p",
-            h("quote", { id: session.messageId }),
-            "未找到有效的链接"
-          )
-        );
+        ctx.logger.warn(`未能提取到有效链接 - 用户: ${session.username}, 内容: ${session.content}`);
         return;
       }
 
-      ctx.logger.info(`开始处理链接 - 用户: ${session.userId}, 群组: ${session.guildId || 'DM'}, URL: ${url}`);
+      ctx.logger.info(`开始处理链接 - 用户: ${session.username}, 群组: ${maskNumbers(session.guildId)}, URL: ${url}`);
       
       // 调用解析API
-      const videoData = await getVideoData(url, config, session, ctx);
-      if (!videoData) {
-        // getVideoData已经处理了错误消息发送
-        return;
-      }
+      const videoData = await getVideoData(url, config, ctx);
       
       // 判断是图文还是视频，只有抖音有图文
       if(hasDouyin && videoData.media_type === 2){
         await handlePhotoText(videoData,config,session,ctx,url)
       }else {
-        handleVideo(videoData,config,session,ctx,url)
+        await handleVideo(videoData,config,session,ctx,url)
       }
       
-      ctx.logger.info(`链接处理完成 - 用户: ${session.userId},群组: ${session.guildId || 'DM'}, URL: ${url}`);
+      ctx.logger.info(`链接处理完成 - 用户: ${session.username},群组: ${maskNumbers(session.guildId)}, URL: ${url}`);
     } catch (error) {
-      ctx.logger.error(`处理消息时发生未预期的错误 - 用户: ${session.userId}, 群组: ${session.guildId || 'DM'}`, error);
-      try {
-        await session.sendQueued(
-          h("p",
-            h("quote", { id: session.messageId }),
-            "处理过程中发生错误，请稍后重试"
-          )
-        );
-      } catch (sendError) {
-        ctx.logger.error(`发送错误消息失败`, sendError);
-      }
-    } finally {
-      // 确保清理消息队列
-      try {
-        await session.cancelQueued();
-      } catch (cancelError) {
-        ctx.logger.error(`清理消息队列失败`, cancelError);
-      }
+      ctx.logger.error(`发生错误 -`, error);
+    }finally{
+      await session.cancelQueued()
     }
   });
 }
