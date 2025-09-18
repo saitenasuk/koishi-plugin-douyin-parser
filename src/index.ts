@@ -3,9 +3,9 @@ export const name = "douyin-parser";
 
 export interface Config {
   url: string;
+  isThumbs: boolean;
   video: {
     isSend: boolean;
-    isThumbs: boolean;
     isCache?: boolean;
     maxDuration?: number;
     maxSize?: number;
@@ -13,14 +13,12 @@ export interface Config {
 }
 
 export const Config = Schema.object({
-  url: Schema.string()
-    .description("Api地址示例：http://127.0.0.1:80")
-    .required(),
+  url: Schema.string().description("Api地址示例：http://127.0.0.1:80").required(),
+  isThumbs: Schema.boolean().default(false).description('封面是否使用缩略图'),
   // isSend: Schema.boolean().description("是否发送视频").default(true),
   video: Schema.intersect([
     Schema.object({
       isSend: Schema.boolean().default(false).description('是否发送视频'),
-      isThumbs: Schema.boolean().default(false).description('封面是否使用缩略图'),
     }),
     Schema.union([
       Schema.object({
@@ -137,6 +135,45 @@ function checkVideoLimits(info: ResultVideoData, config: Config, ctx: Context ):
   return true
 }
 
+//下载视频
+async function downloadVideo(url: string, maxSizeMB: number = 1): Promise<Buffer> {
+  // 首先发送HEAD请求检查文件大小
+  const headResponse = await fetch(url, {
+    // method: 'HEAD',
+    headers: {
+      'Referer': url
+    }
+  });
+  
+  // if (!headResponse.ok) {
+  //   throw new Error(`无法获取视频信息 - 状态码: ${headResponse.status}, URL: ${url}`);
+  // }
+  
+  // // 检查文件大小
+  // const contentLength = headResponse.headers.get('content-length');
+  // if (contentLength) {
+  //   const fileSizeBytes = parseInt(contentLength);
+  //   const fileSizeMB = fileSizeBytes / (1024 * 1024);
+    
+  //   if (fileSizeMB > maxSizeMB) {
+  //     throw new Error(`视频文件过大: ${fileSizeMB.toFixed(2)}MB，超过限制 ${maxSizeMB}MB`);
+  //   }
+  // }
+  
+  // // 文件大小检查通过，开始下载
+  // const response = await fetch(url, {
+  //   headers: {
+  //     'Referer': url
+  //   }
+  // });
+  
+  if (!headResponse.ok) {
+    throw new Error(`视频下载失败 - 状态码: ${headResponse.status}, URL: ${url}`);
+  }
+  
+  return Buffer.from(await headResponse.arrayBuffer());
+}
+
 //处理视频
 async function handleVideo(videoData: ResultVideoData, config: Config, session: Session, ctx: Context, url: string) {
   // 构建视频信息文本
@@ -147,7 +184,7 @@ async function handleVideo(videoData: ResultVideoData, config: Config, session: 
   const msId = await session.sendQueued(
     h("p",
       h("quote", { id: session.messageId }),
-      h("img", { src: videoData.video.cover.url_list[0] }),
+      h("img", { src: config.isThumbs ? videoData.video.big_thumbs?.[0]?.img_url : videoData.video.cover.url_list[0] }),
       videoInfo
     )
   );
@@ -165,16 +202,48 @@ async function handlePhotoText(videoData: ResultVideoData,config,session,ctx,url
   // 构建文本
   const videoInfo = buildVideoInfoText(videoData,false);
   let msId = [];
-  // 发送图文 如果图片大于1则发送合并消息
+  // 发送图文 如果图文大于1则发送合并消息
   if(videoData.images.length > 1){
-    //先创建包含视频信息的第一条消息
+    //先创建包含简介信息的第一条消息
     const messagesToForward = [
       h('message',videoInfo)
     ];
-    // 然后遍历添加图片消息
+    
+    // 收集所有需要下载的视频URL
+    const videoUrls: string[] = [];
     videoData.images.forEach(img => {
-      messagesToForward.push(h('message', h('img', { src: img.download_url_list?.[0] })));
+      if(img.video?.download_addr?.url_list?.[0]){
+        videoUrls.push(img.video.download_addr.url_list[0]);
+      }
     });
+    
+    // 异步下载所有视频
+    const videoBuffers: Buffer[] = [];
+    for(const videoUrl of videoUrls) {
+      try {
+        const videoBuffer = await downloadVideo(videoUrl);
+        videoBuffers.push(videoBuffer);
+      } catch (error) {
+        ctx.logger.warn(`第${videoUrls.indexOf(videoUrl)+1}个视频下载失败: ${videoUrl}, 错误: ${error.message}`);
+      }
+    }
+    
+    // 构建消息，按原始顺序添加图片和视频
+    let videoIndex = 0;
+    for(let i = 0; i < videoData.images.length; i++) {
+      const img = videoData.images[i];
+      
+      // 有视频流添加视频
+      if(img.video?.download_addr?.url_list?.[0] && videoIndex < videoBuffers.length){
+        messagesToForward.push(h('message', h.video(videoBuffers[videoIndex], 'video/mp4')));
+        videoIndex++;
+      }else{
+      // 添加图片
+      messagesToForward.push(h('message', h('img', { src: img.download_url_list?.[0] })));
+      }
+      
+    }
+    
     msId = await session.sendQueued(
       h('message', { forward: true }, ...messagesToForward)
     );
@@ -187,6 +256,9 @@ async function handlePhotoText(videoData: ResultVideoData,config,session,ctx,url
         videoInfo
       )
     );
+          //下载视频
+          const videoBuffer = await downloadVideo(videoData.images[0].video?.download_addr?.url_list?.[0]);
+          await session.sendQueued(h.video(videoBuffer, 'video/mp4'))
   }else{
     msId = await session.sendQueued(
       h("p",  
@@ -232,9 +304,8 @@ export function apply(ctx: Context, config: Config) {
       
       // 调用解析API
       const videoData = await getVideoData(url, config, ctx);
-      
       // 判断是图文还是视频，只有抖音有图文
-      if(hasDouyin && videoData.media_type === 2){
+      if(hasDouyin && (videoData.media_type === 2 || videoData.media_type === 42)){
         await handlePhotoText(videoData,config,session,ctx,url)
       }else {
         await handleVideo(videoData,config,session,ctx,url)
