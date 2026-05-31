@@ -1,3 +1,5 @@
+# 建议去使用[AstrBot](https://github.com/AstrBotDevs/AstrBot)
+
 # koishi-plugin-douyin-parser
 
 [![npm](https://img.shields.io/npm/v/koishi-plugin-douyin-parser?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-douyin-parser)
@@ -7,3 +9,4 @@
 代码参考：[koishi-plugin-douyin](https://github.com/tediorelee/koishi-plugin-douyin#readme)
 
 解析抖音，tiktok链接
+
